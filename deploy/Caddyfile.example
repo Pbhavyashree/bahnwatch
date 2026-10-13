@@ -1,0 +1,22 @@
+# Append this to /etc/caddy/Caddyfile, alongside whatever energy-hub already
+# has there. Caddy obtains and renews the certificate itself.
+#
+# HTTPS is not decoration here. The page asks for Notification permission, and
+# the Notification API is gated behind a secure context: over plain HTTP on a
+# real hostname the prompt never appears and the button silently does nothing.
+# localhost is exempt, which is exactly why this works on your laptop and would
+# not have worked on the server.
+
+bahnwatch.duckdns.org {
+    encode zstd gzip
+
+    # reverse_proxy passes the WebSocket upgrade through without extra config.
+    # The page falls back to polling /api/state if /ws fails, so a proxy that
+    # ate the upgrade would look almost fine -- slower, and no instant alerts.
+    reverse_proxy 127.0.0.1:8000
+
+    log {
+        output file /var/log/caddy/bahnwatch.log
+        format console
+    }
+}

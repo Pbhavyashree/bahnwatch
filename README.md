@@ -80,7 +80,7 @@ decision.
 
 ```bash
 make install
-make test      # 76 tests, no network needed
+make test      # 78 tests, no network needed
 make run       # http://localhost:8000
 ```
 
@@ -125,6 +125,20 @@ deployment rejects it and accepts only `OFF` or `SERVER_DEFAULT`. The client
 sends `SERVER_DEFAULT` and, if a host refuses the parameter anyway, drops it and
 retries once rather than failing every poll — a deployment that rejects a
 parameter is describing itself, not the request. Override with `VBB_RT_MODE`.
+
+**Running it as a service.** [`deploy/`](deploy/) has a systemd unit, a Caddy
+site block and the full steps for an Oracle Cloud always-free instance —
+including the two separate Oracle firewalls that both have to be opened, and why
+HTTPS is load-bearing rather than decorative: the page asks for browser
+notification permission, and the Notification API is only available in a secure
+context. `localhost` is exempt, which is exactly why it works on a laptop and
+fails silently on a real hostname over plain HTTP.
+
+Polling adapts there: `BAHNWATCH_POLL_SECONDS` inside the window around a
+departure, `BAHNWATCH_IDLE_POLL_SECONDS` outside it. A journey that happens once
+a day does not need minute resolution at 04:00, baselines are cut by hour so
+data from hours you never travel in cannot inform the decision anyway, and the
+key has a budget — roughly 500 requests a day instead of 2,900.
 
 **The test system may carry little or no realtime data.** If the probe reports
 `0/12 shown rows carry realtime data`, that is the environment, not the parser:
@@ -441,7 +455,7 @@ develop on.
 
 ## Tests
 
-**76 tests, no network required.**
+**78 tests, no network required.**
 
 Every test runs against the simulator. That matters more here than usual: the
 system exists to be reliable during disruption, which is exactly when the

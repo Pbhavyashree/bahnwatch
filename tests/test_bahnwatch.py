@@ -1058,3 +1058,34 @@ def test_falls_back_to_arithmetic_when_the_feed_cannot_supply_a_chain():
     now = datetime(2026, 3, 2, 21, 20, tzinfo=BERLIN)
     plan = plan_journey(j, {"A": [], "B": []}, None, now)
     assert plan.normal_leave_at == j.scheduled_leave(now)
+
+
+# ---------------------------------------------------------------------------
+# Quota-aware polling. A journey that happens once a day does not need a
+# 60-second poll at 04:00, and a key with a request budget makes that a cost
+# rather than just waste.
+# ---------------------------------------------------------------------------
+
+def test_poller_idles_outside_the_commute_window():
+    from bahnwatch import api
+
+    j = api.JOURNEYS[0]
+    day = datetime(2026, 3, 2, tzinfo=BERLIN)        # a Monday
+    leave = j.scheduled_leave(day)
+
+    near = leave - timedelta(minutes=10)
+    far = leave - timedelta(hours=10)
+
+    assert api._minutes_to_next_journey(near) <= api.ACTIVE_WINDOW_MIN
+    assert api._minutes_to_next_journey(far) > api.ACTIVE_WINDOW_MIN
+
+
+def test_an_empty_journey_list_idles_rather_than_polling_flat_out():
+    from bahnwatch import api
+    saved = api.JOURNEYS
+    try:
+        api.JOURNEYS = []
+        assert api._minutes_to_next_journey(datetime(2026, 3, 2, 9, 0, tzinfo=BERLIN)) \
+            == float("inf")
+    finally:
+        api.JOURNEYS = saved

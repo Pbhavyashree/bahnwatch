@@ -1,0 +1,54 @@
+[Unit]
+Description=bahnwatch — Berlin commute alerting
+Documentation=https://github.com/Pbhavyashree/bahnwatch
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=bahnwatch
+Group=bahnwatch
+WorkingDirectory=/opt/bahnwatch
+
+# The VBB key lives here, root-owned and 0600. Never in the repo, never in a
+# unit file -- unit files are world-readable by default.
+EnvironmentFile=/etc/bahnwatch/bahnwatch.env
+
+# StateDirectory creates and owns /var/lib/bahnwatch, which is the only path
+# this service can write to. The observation database belongs there rather than
+# beside the code: a deploy replaces the code and must not take the history
+# with it, since baselines need ~30 observations per line/hour/day-type and
+# that is weeks of evenings.
+StateDirectory=bahnwatch
+Environment=BAHNWATCH_DB=/var/lib/bahnwatch/bahnwatch.db
+Environment=BAHNWATCH_SOURCE=vbb
+
+# Bound to loopback on purpose. Caddy terminates TLS and proxies in; nothing
+# reaches uvicorn from outside the box.
+ExecStart=/opt/bahnwatch/.venv/bin/uvicorn bahnwatch.api:app --host 127.0.0.1 --port 8000
+
+Restart=always
+RestartSec=5
+# An upstream outage makes this crash-and-restart repeatedly if the client ever
+# stops swallowing errors. Give up only after sustained failure, and tell
+# systemd to keep trying rather than parking the unit in a failed state.
+StartLimitIntervalSec=300
+StartLimitBurst=20
+
+# Hardening. This process reads one HTTP API and writes one SQLite file.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

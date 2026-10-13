@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+from datetime import timedelta
 from pathlib import Path
 
 from fastapi import FastAPI, Response, WebSocket, WebSocketDisconnect
@@ -41,6 +42,15 @@ USE_SIMULATOR = SOURCE_NAME == "simulator"
 # does not acquire a new delay every twenty seconds.
 _DEFAULT_POLL = "20" if USE_SIMULATOR else "60"
 POLL_SECONDS = int(os.environ.get("BAHNWATCH_POLL_SECONDS", _DEFAULT_POLL))
+
+# Running 24/7 on a quota'd key changes the arithmetic again. A journey that
+# happens once a day does not need a 60-second poll at 04:00, and the baselines
+# are cut by hour anyway -- data from hours you never travel in cannot inform a
+# decision you only make in the evening. Outside the window around a departure
+# the poller idles, which cuts roughly 80% of the daily request count without
+# touching the resolution where it matters.
+ACTIVE_WINDOW_MIN = float(os.environ.get("BAHNWATCH_ACTIVE_WINDOW_MIN", "90"))
+IDLE_POLL_SECONDS = int(os.environ.get("BAHNWATCH_IDLE_POLL_SECONDS", "600"))
 
 # Real journey: Blankenburg -> Friedrichstrasse (S2), change to S7 -> Potsdam.
 #
@@ -224,13 +234,37 @@ async def poll_once() -> dict:
     }
 
 
+def _minutes_to_next_journey(now) -> float:
+    """Minutes until the soonest upcoming journey, across days.
+
+    Returns a large number when nothing is configured, so an empty config idles
+    rather than polling flat out forever.
+    """
+    best = float("inf")
+    for j in JOURNEYS:
+        leave = j.scheduled_leave(now)
+        for day in range(8):
+            candidate = leave + timedelta(days=day)
+            if candidate >= now - timedelta(minutes=30) and j.runs_on(candidate):
+                best = min(best, (candidate - now).total_seconds() / 60.0)
+                break
+    return best
+
+
+def _next_interval(now) -> int:
+    if USE_SIMULATOR:
+        return POLL_SECONDS          # free, and the demo should stay responsive
+    return (POLL_SECONDS if _minutes_to_next_journey(now) <= ACTIVE_WINDOW_MIN
+            else IDLE_POLL_SECONDS)
+
+
 async def poller() -> None:
     while True:
         try:
             await hub.broadcast(await poll_once())
         except Exception as exc:  # noqa: BLE001
             await hub.broadcast({"status": "error", "detail": str(exc)})
-        await asyncio.sleep(POLL_SECONDS)
+        await asyncio.sleep(_next_interval(now_berlin()))
 
 
 @contextlib.asynccontextmanager
