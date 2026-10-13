@@ -1,22 +1,55 @@
-# Append this to /etc/caddy/Caddyfile, alongside whatever energy-hub already
-# has there. Caddy obtains and renews the certificate itself.
+# Two shapes, depending on what already owns ports 80 and 443.
+# Check first: sudo ss -tlnp | grep -E ':80|:443'
+
+# ---------------------------------------------------------------------------
+# A. Host Caddy, nothing else on those ports.
 #
-# HTTPS is not decoration here. The page asks for Notification permission, and
-# the Notification API is gated behind a secure context: over plain HTTP on a
-# real hostname the prompt never appears and the button silently does nothing.
-# localhost is exempt, which is exactly why this works on your laptop and would
-# not have worked on the server.
+# REPLACE /etc/caddy/Caddyfile with this rather than appending to it. The
+# shipped default contains a `:80 { ... }` block that claims every host on that
+# port, which makes a named site ambiguous and Caddy refuses to start.
+# ---------------------------------------------------------------------------
 
 bahnwatch.duckdns.org {
-    encode zstd gzip
+	encode zstd gzip
 
-    # reverse_proxy passes the WebSocket upgrade through without extra config.
-    # The page falls back to polling /api/state if /ws fails, so a proxy that
-    # ate the upgrade would look almost fine -- slower, and no instant alerts.
-    reverse_proxy 127.0.0.1:8000
+	# reverse_proxy passes the WebSocket upgrade through with no extra config.
+	# The page falls back to polling /api/state if /ws fails, so a proxy that
+	# ate the upgrade would look almost fine -- slower, and no instant alerts.
+	reverse_proxy 127.0.0.1:8000
 
-    log {
-        output file /var/log/caddy/bahnwatch.log
-        format console
-    }
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+	}
 }
+
+# ---------------------------------------------------------------------------
+# B. A reverse proxy is already running in Docker.
+#
+# Append this to the Caddyfile that container mounts -- not to a host one --
+# and reload with `docker exec <name> caddy reload --config /etc/caddy/Caddyfile`
+# so the other sites keep serving.
+#
+# The upstream is the bridge GATEWAY, not 127.0.0.1: inside the container,
+# loopback is the container. Requires the systemd drop-in that rebinds uvicorn
+# to 0.0.0.0, and an iptables rule allowing the bridge subnet to reach port
+# 8000 -- see deploy/README.md section 6B. Find the gateway with:
+#
+#   sudo docker network inspect <network> -f '{{(index .IPAM.Config 0).Gateway}}'
+#
+# No Content-Security-Policy here on purpose: this page loads Google Fonts and
+# opens a WebSocket, so a policy copied from a static site breaks it silently.
+# Add one deliberately, with font-src, style-src and connect-src wss:, or not
+# at all.
+# ---------------------------------------------------------------------------
+
+# bahnwatch.duckdns.org {
+# 	encode zstd gzip
+# 	reverse_proxy 172.18.0.1:8000
+# 	header {
+# 		Strict-Transport-Security "max-age=31536000"
+# 		X-Content-Type-Options "nosniff"
+# 		Referrer-Policy "strict-origin-when-cross-origin"
+# 	}
+# }

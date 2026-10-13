@@ -1,43 +1,55 @@
 # Deploying to an Oracle Cloud always-free instance
 
-Takes about twenty minutes. Assumes Ubuntu; the Oracle Linux differences are
-noted at each step that has one.
+Running at `https://bahnwatch.duckdns.org` on an Ampere instance, started on
+boot, restarted on crash, with its observation history surviving deploys.
 
-The result: bahnwatch at `https://bahnwatch.duckdns.org`, started on boot,
-restarted on crash, with its observation history surviving deploys.
+About twenty minutes. Ubuntu; the Oracle Linux differences are noted where they
+exist.
 
 ---
 
-## 0. Why HTTPS is not optional here
+## 0. Two things to establish before anything else
 
-The page asks for browser Notification permission, and the Notification API is
-only available in a **secure context**. `localhost` is exempt — which is exactly
-why it works on your laptop and would silently fail over plain HTTP on a real
-hostname. The prompt simply never appears and the button does nothing.
+**HTTPS is load-bearing, not decoration.** The page asks for browser
+Notification permission, and the Notification API is only available in a
+**secure context**. `localhost` is exempt — which is exactly why it works on a
+laptop and fails silently on a real hostname over plain HTTP. No prompt, no
+error, the button simply does nothing.
 
-Caddy is in these steps because it gets a certificate without being asked
-twice, not because a reverse proxy is otherwise interesting.
+**Find out what already owns ports 80 and 443 before installing anything.**
+
+```bash
+sudo ss -tlnp | grep -E ':80|:443'
+```
+
+If that is empty, follow **path A**. If something is already there — on this
+box it was `docker-proxy`, because a containerised Caddy was already serving
+another project — follow **path B**. Installing a second web server when one is
+already bound to those ports fails with `address already in use`, and a host
+`which caddy nginx` will not find a containerised one.
 
 ## 1. A DuckDNS subdomain
 
-In your DuckDNS account, add `bahnwatch` pointing at the same public IP as
-`energy-hub`. One A record, nothing else.
+Add `bahnwatch` in your DuckDNS account, pointing at the instance's public IP.
+Subdomains are not a wildcard — each is its own entry.
 
-Confirm it resolves before going further — Let's Encrypt will fail on a name
-that does not:
+Confirm it resolves before going further, against a public resolver rather than
+your router, which will have cached the NXDOMAIN from any earlier attempt:
 
 ```bash
-dig +short bahnwatch.duckdns.org
+nslookup bahnwatch.duckdns.org 1.1.1.1
 ```
+
+Let's Encrypt cannot issue for a name that does not resolve.
 
 ## 2. Open the ports — in both places
 
-This is the Oracle Cloud trap. There are two firewalls and closing either one
-produces the same symptom: a connection that hangs rather than refuses.
+Oracle has two firewalls and closing either produces the same symptom: a
+connection that hangs rather than refuses.
 
-**a. The VCN security list**, in the web console:
-Networking → Virtual Cloud Networks → your VCN → Security Lists → Default →
-Add Ingress Rules. Source `0.0.0.0/0`, TCP, destination ports **80** and **443**.
+**a. The VCN security list**, in the web console: Networking → Virtual Cloud
+Networks → your VCN → Security Lists → Default → Add Ingress Rules. Source
+`0.0.0.0/0`, TCP, destination ports **80** and **443**.
 
 **b. The host firewall.** Oracle's Ubuntu images ship with iptables rules that
 drop almost everything, and they persist across reboots:
@@ -48,7 +60,7 @@ sudo iptables -I INPUT 6 -m state --state NEW -p tcp --dport 443 -j ACCEPT
 sudo netfilter-persistent save
 ```
 
-On Oracle Linux it is firewalld instead:
+Oracle Linux uses firewalld:
 
 ```bash
 sudo firewall-cmd --permanent --add-service=http --add-service=https
@@ -57,14 +69,13 @@ sudo firewall-cmd --reload
 
 ## 3. User, code, virtualenv
 
-A dedicated service account with no login shell. The app reads one API and
-writes one SQLite file; it has no business being able to log in.
+A dedicated service account with no login shell. This process reads one HTTP API
+and writes one SQLite file; it has no business being able to log in.
 
 ```bash
+sudo apt update && sudo apt install -y git python3-venv python3-pip
 sudo useradd --system --home /opt/bahnwatch --shell /usr/sbin/nologin bahnwatch
-sudo mkdir -p /opt/bahnwatch
-sudo chown bahnwatch:bahnwatch /opt/bahnwatch
-
+sudo mkdir -p /opt/bahnwatch && sudo chown bahnwatch:bahnwatch /opt/bahnwatch
 sudo -u bahnwatch git clone https://github.com/Pbhavyashree/bahnwatch.git /opt/bahnwatch
 cd /opt/bahnwatch
 sudo -u bahnwatch python3 -m venv .venv
@@ -90,25 +101,24 @@ user, so the service never needs read access to the file itself.
 sudo cp /opt/bahnwatch/deploy/bahnwatch.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now bahnwatch
-sudo systemctl status bahnwatch --no-pager
-```
-
-It binds to `127.0.0.1:8000` deliberately — nothing reaches uvicorn from
-outside the box. Check it before putting a proxy in front:
-
-```bash
-curl -s localhost:8000/api/state | head -c 300
+curl -s localhost:8000/api/state | head -c 400
 ```
 
 You want `"source": "vbb"` and `"feed_error": null`. A `feed_error` here means
-the key or the base URL did not survive the copy; run
-`sudo -u bahnwatch /opt/bahnwatch/.venv/bin/python /opt/bahnwatch/scripts/probe_vbb.py 900142001`
-with the env loaded and read what VBB says.
-
-## 6. Caddy
+the key or the base URL did not survive the copy — run the probe as the service
+user and read what VBB says, rather than guessing:
 
 ```bash
-sudo apt install -y debian-keyring debian-archive-keyring apt-transport-https curl
+sudo -u bahnwatch env $(sudo cat /etc/bahnwatch/bahnwatch.env | grep -v '^#' | xargs) \
+     /opt/bahnwatch/.venv/bin/python /opt/bahnwatch/scripts/probe_vbb.py 900142001
+```
+
+---
+
+## 6A. No existing web server: install Caddy
+
+```bash
+sudo apt install -y debian-keyring debian-archive-keyring apt-transport-https
 curl -1sLf https://dl.cloudsmith.io/public/caddy/stable/gpg.key \
   | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
 curl -1sLf https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt \
@@ -116,52 +126,123 @@ curl -1sLf https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt \
 sudo apt update && sudo apt install -y caddy
 ```
 
-Append the block from `Caddyfile.example` to `/etc/caddy/Caddyfile` — keep
-whatever energy-hub already has in there — then:
+Replace `/etc/caddy/Caddyfile` with the first block from `Caddyfile.example` —
+replace rather than append, because the shipped default contains a `:80 { … }`
+block that claims every host on that port and makes a named site ambiguous.
 
 ```bash
-sudo systemctl reload caddy
+sudo systemctl restart caddy
 ```
 
-Open `https://bahnwatch.duckdns.org`. The padlock is what makes the
-notification button work.
+## 6B. A containerised reverse proxy already owns 80/443
 
-## 7. Updating later
+This is the case on the energy-hub box. Do **not** install host Caddy; add a
+site to the one that is running.
+
+Find its Caddyfile on the host and the bridge gateway address:
 
 ```bash
-cd /opt/bahnwatch
-sudo -u bahnwatch git pull
-sudo -u bahnwatch .venv/bin/pip install -e .
+sudo docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Ports}}'
+
+CF=$(sudo docker inspect deploy-caddy-1 --format \
+  '{{range .Mounts}}{{if eq .Destination "/etc/caddy/Caddyfile"}}{{.Source}}{{end}}{{end}}')
+echo "$CF"
+
+sudo docker network inspect $(sudo docker inspect -f \
+  '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{end}}' deploy-caddy-1) \
+  -f '{{(index .IPAM.Config 0).Gateway}}'
+```
+
+**Rebind bahnwatch.** The unit binds `127.0.0.1:8000`, and inside the proxy
+container that address means *the container itself*. A drop-in keeps the shipped
+unit generic:
+
+```bash
+sudo mkdir -p /etc/systemd/system/bahnwatch.service.d
+printf '[Service]\nExecStart=\nExecStart=/opt/bahnwatch/.venv/bin/uvicorn bahnwatch.api:app --host 0.0.0.0 --port 8000\n' \
+  | sudo tee /etc/systemd/system/bahnwatch.service.d/override.conf
+sudo systemctl daemon-reload && sudo systemctl restart bahnwatch
+```
+
+The empty `ExecStart=` is required — it clears the original before setting the
+replacement. Binding `0.0.0.0` does not expose port 8000: the VCN security list
+permits only 80 and 443, and the host firewall drops the rest.
+
+**Add the site block** — the second block in `Caddyfile.example`, appended to
+the Caddyfile that container mounts, with the gateway address from above.
+
+**Then the rule that is easy to miss.** Traffic from the Docker bridge to the
+host arrives on a different path than inbound 80/443 and is rejected by the same
+ruleset, which surfaces as `dial tcp 172.18.0.1:8000: connect: no route to host`
+in the proxy log and a 502 in the browser — after the certificate has been
+issued, so everything looks like it worked right up to the last hop:
+
+```bash
+sudo iptables -I INPUT 6 -s 172.18.0.0/16 -p tcp --dport 8000 -j ACCEPT
+sudo netfilter-persistent save
+```
+
+Scoped to the bridge subnet, so port 8000 stays unreachable from the internet.
+
+**Reload in place**, so the other sites keep serving:
+
+```bash
+sudo docker exec deploy-caddy-1 caddy reload --config /etc/caddy/Caddyfile
+sudo docker logs --tail 20 deploy-caddy-1
+```
+
+The log shows the ACME challenge and `certificate obtained successfully`.
+
+## 7. Verify it survives a reboot
+
+Running is not the same as deployed.
+
+```bash
+sudo reboot
+# wait, reconnect
+systemctl is-active bahnwatch
+sudo docker ps --format '{{.Names}}\t{{.Status}}'
+curl -s -o /dev/null -w '%{http_code}\n' https://bahnwatch.duckdns.org
+```
+
+`active`, the containers `Up`, and `200`.
+
+## 8. Updating
+
+```bash
+sudo -u bahnwatch git -C /opt/bahnwatch pull
+sudo -u bahnwatch /opt/bahnwatch/.venv/bin/pip install -e /opt/bahnwatch
 sudo systemctl restart bahnwatch
 ```
 
-The database is in `/var/lib/bahnwatch`, not in the repo, so a deploy never
-takes the observation history with it. That history is the thing you cannot
-rebuild: baselines need roughly 30 observations per line, hour and day type,
-which is weeks of evenings.
+The database is in `/var/lib/bahnwatch`, created and owned by `StateDirectory=`,
+not in the repo — so a deploy never takes the observation history with it. That
+history is the thing you cannot rebuild: baselines need roughly 30 observations
+per line, hour and day type, which is weeks of evenings.
 
 ---
 
 ## Operating it
 
 ```bash
-sudo journalctl -u bahnwatch -f              # live logs
-sudo systemctl restart bahnwatch             # after a config change
+sudo journalctl -u bahnwatch -f
 curl -s localhost:8000/api/state | jq .feed_error
 ```
 
 **Request budget.** The poller runs at `BAHNWATCH_POLL_SECONDS` within
 `BAHNWATCH_ACTIVE_WINDOW_MIN` of a departure and at
-`BAHNWATCH_IDLE_POLL_SECONDS` the rest of the time. With the defaults and two
-stops that is roughly 500 requests a day rather than 2,900. If VBB tells you a
-quota, set these from it rather than guessing.
+`BAHNWATCH_IDLE_POLL_SECONDS` otherwise — roughly 500 requests a day for two
+stops rather than 2,900. If VBB states a quota, set these from it.
 
-**This runs against VBB's test system.** It carries no availability guarantee,
-and VBB grants production access separately once development is finished and
-the terms are accepted. Fine for personal use; not something to advertise as a
-public service until that conversation has happened.
+**This runs against VBB's test system**, which carries no availability
+guarantee. Production access is granted separately, once development is
+finished and the terms of use are accepted.
 
-**If the feed dies.** The client returns an empty list rather than raising, the
-page shows the error in orange, and the service stays up. That is deliberate:
-an alerter that crashes when the transit API hiccups is useless at precisely the
-moment it matters, during disruption, when that API is also under load.
+**Expect scanners.** Certificate Transparency logs are public, so a new
+hostname is probed for `/wp-json/` and `/xmlrpc.php` within seconds of the
+certificate being issued. There is no WordPress to find.
+
+**If the feed dies**, the client returns an empty list rather than raising, the
+page shows the error, and the service stays up. An alerter that crashes when the
+transit API hiccups is useless at precisely the moment it matters — during
+disruption, when that API is also under load.
