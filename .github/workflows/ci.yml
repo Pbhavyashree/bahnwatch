@@ -1,0 +1,41 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Lint
+        run: ruff check src tests
+
+      # No network access is needed. The suite runs entirely against the
+      # simulator, which is deliberate: a system whose job is to stay useful
+      # while the transit API is struggling cannot have a test suite that
+      # depends on that API being healthy.
+      - name: Test
+        run: pytest --cov=bahnwatch --cov-report=term-missing --cov-fail-under=80
+
+      - name: Smoke test the server
+        run: |
+          BAHNWATCH_SOURCE=simulator python -m uvicorn bahnwatch.api:app --port 8000 &
+          sleep 6
+          curl -fsS http://localhost:8000/api/state | python -c "import json,sys; d=json.load(sys.stdin); assert d['status']=='ok'; assert d['board']; print('server ok')"

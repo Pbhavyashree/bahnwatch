@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>bahnwatch — when to leave</title>
+<!-- Inline so there is no request to make and nothing to 404. -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b0f14'/%3E%3Cpath d='M7 21h18M9 21V11h14v10M12 15h8' stroke='%2334d399' stroke-width='2.4' stroke-linecap='round' fill='none'/%3E%3Ccircle cx='12' cy='24' r='1.8' fill='%2334d399'/%3E%3Ccircle cx='20' cy='24' r='1.8' fill='%2334d399'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;700;800&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#0A0D12; --panel:#111720; --panel2:#161E2A; --line:#222D3D;
+  --text:#E8EEF6; --muted:#7D8EA6;
+  --u:#0B5FA5;      /* U-Bahn blue */
+  --s:#3B8C3F;      /* S-Bahn green */
+  --tram:#BE1E3C; --bus:#A5027D;
+  --ok:#2FD48F; --warn:#FFB020; --bad:#FF4D5E;
+}
+*{box-sizing:border-box}
+body{
+  margin:0;background:var(--bg);color:var(--text);
+  font-family:Inter,system-ui,sans-serif;font-size:15px;line-height:1.55;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:1120px;margin:0 auto;padding:0 22px}
+
+header{padding:34px 0 22px;border-bottom:1px solid var(--line)}
+.brand{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap}
+h1{font-family:Archivo,sans-serif;font-weight:800;letter-spacing:-.03em;font-size:2rem;margin:0}
+.sub{color:var(--muted);font-size:.9rem}
+.status{
+  margin-left:auto;font-family:'JetBrains Mono',monospace;font-size:11px;
+  letter-spacing:.1em;text-transform:uppercase;color:var(--muted);
+  display:flex;align-items:center;gap:8px;
+}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--ok);animation:pulse 2s infinite}
+.dot.off{background:var(--bad);animation:none}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
+
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:24px 0}
+@media(max-width:860px){.grid{grid-template-columns:1fr}}
+
+.card{
+  background:var(--panel);border:1px solid var(--line);border-radius:6px;
+  padding:20px 22px;position:relative;overflow:hidden;
+}
+.card h2{
+  font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.16em;
+  text-transform:uppercase;color:var(--muted);margin:0 0 16px;font-weight:500;
+}
+
+/* ---- commute plan ---- */
+.plan{border-left:3px solid var(--line);padding-left:16px;margin-bottom:20px}
+.plan:last-child{margin-bottom:0}
+.plan.alert{border-left-color:var(--warn)}
+.plan.bad{border-left-color:var(--bad)}
+.plan-label{font-size:.82rem;color:var(--muted);margin-bottom:2px}
+.leave{font-family:Archivo,sans-serif;font-weight:800;font-size:2.4rem;letter-spacing:-.03em;line-height:1.05}
+.leave small{font-size:.9rem;font-weight:600;color:var(--muted);letter-spacing:0}
+.strike{text-decoration:line-through;color:var(--muted);font-size:1.05rem;font-weight:600;margin-left:10px}
+.why{color:#B4C2D4;font-size:.87rem;margin-top:7px}
+.countdown{font-family:'JetBrains Mono',monospace;font-size:.78rem;color:var(--muted);margin-top:6px}
+
+/* ---- journey legs ---- */
+.legs{margin-top:12px;display:grid;gap:6px}
+.leg{
+  display:grid;grid-template-columns:48px 1fr 52px 60px;gap:9px;align-items:center;
+  background:var(--panel2);border-radius:4px;padding:8px 10px;font-size:.85rem;
+  border-left:2px solid transparent;
+}
+.leg.missed{border-left-color:var(--bad);background:#1F1418}
+.leg-route{color:#C6D2E0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.leg-dep{font-family:'JetBrains Mono',monospace;text-align:right;color:var(--muted)}
+.leg-delay{font-family:'JetBrains Mono',monospace;text-align:right;font-size:.8rem;color:var(--ok)}
+.leg-delay.late{color:var(--warn)}
+.leg-note{grid-column:1/-1;font-size:.76rem;color:var(--muted);margin-top:2px}
+.slack{font-family:'JetBrains Mono',monospace;font-size:.74rem;margin-left:6px}
+.slack.ok{color:var(--ok)} .slack.tight{color:var(--warn)} .slack.miss{color:var(--bad)}
+
+/* ---- departure board ---- */
+.board{display:grid;gap:2px}
+.row{
+  display:grid;grid-template-columns:52px 1fr 62px 58px;gap:10px;align-items:center;
+  padding:8px 10px;border-radius:4px;background:var(--panel2);
+  font-size:.9rem;
+}
+.badge{
+  font-family:'JetBrains Mono',monospace;font-weight:700;font-size:.76rem;
+  text-align:center;padding:3px 0;border-radius:3px;color:#fff;
+}
+.badge.subway{background:var(--u)} .badge.suburban{background:var(--s)}
+.badge.tram{background:var(--tram)} .badge.bus{background:var(--bus)}
+.badge.regional,.badge.express,.badge.ferry{background:#4A5A70}
+.dir{color:#C6D2E0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.time{font-family:'JetBrains Mono',monospace;text-align:right}
+.delay{font-family:'JetBrains Mono',monospace;text-align:right;font-size:.82rem;color:var(--ok)}
+.delay.late{color:var(--warn)} .delay.verylate{color:var(--bad)}
+.row.cancelled .dir,.row.cancelled .time{text-decoration:line-through;color:var(--muted)}
+
+/* ---- reliability ---- */
+.rel-row{display:grid;grid-template-columns:52px 1fr 54px;gap:10px;align-items:center;margin-bottom:7px}
+.bar{height:6px;background:var(--panel2);border-radius:3px;overflow:hidden}
+.bar span{display:block;height:100%;background:linear-gradient(90deg,var(--warn),var(--bad));transition:width .5s}
+.pct{font-family:'JetBrains Mono',monospace;font-size:.78rem;color:var(--muted);text-align:right}
+
+/* ---- controls ---- */
+.controls{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px}
+button{
+  font-family:'JetBrains Mono',monospace;font-size:11.5px;letter-spacing:.05em;
+  background:var(--panel2);color:var(--text);border:1px solid var(--line);
+  border-radius:4px;padding:9px 14px;cursor:pointer;transition:border-color .15s,color .15s;
+}
+button:hover{border-color:var(--warn);color:var(--warn)}
+button.primary{border-color:var(--warn);color:var(--warn)}
+
+.toast{
+  position:fixed;right:18px;bottom:18px;max-width:340px;z-index:50;
+  background:var(--panel);border:1px solid var(--warn);border-left:4px solid var(--warn);
+  border-radius:6px;padding:14px 16px;box-shadow:0 12px 32px rgba(0,0,0,.5);
+  transform:translateY(140%);transition:transform .35s cubic-bezier(.2,.8,.2,1);
+}
+.toast.show{transform:none}
+.toast b{display:block;margin-bottom:3px}
+.toast p{margin:0;font-size:.85rem;color:#B4C2D4}
+
+footer{padding:26px 0 40px;color:#4E5D73;font-size:.78rem;font-family:'JetBrains Mono',monospace}
+.note{color:var(--muted);font-size:.8rem;margin-top:10px}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap brand">
+    <h1>bahnwatch</h1>
+    <span class="sub">when to leave — not just what's late</span>
+    <span class="status"><i class="dot" id="dot"></i><span id="statusText">connecting</span></span>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <div class="grid">
+    <section class="card">
+      <h2>Your commutes</h2>
+      <div id="plans"></div>
+      <div class="controls">
+        <button id="notifyBtn" class="primary">Enable notifications</button>
+        <button id="disruptBtn" hidden>Simulate S2 disruption</button>
+        <button id="clearBtn" hidden>Clear disruption</button>
+      </div>
+      <p class="note" id="modeNote"></p>
+    </section>
+
+    <section class="card">
+      <h2 id="boardTitle">Live departures</h2>
+      <div class="board" id="board"></div>
+    </section>
+  </div>
+
+  <section class="card">
+    <h2>Line reliability — share of departures 5+ min late</h2>
+    <div id="reliability"></div>
+    <p class="note" id="obsNote"></p>
+  </section>
+
+</div>
+
+<footer class="wrap">
+  <span id="footerNote">bahnwatch</span>
+</footer>
+
+<div class="toast" id="toast"><b id="toastTitle"></b><p id="toastBody"></p></div>
+
+<script>
+const $ = id => document.getElementById(id);
+let ws, retry = 0, seenAlerts = new Set();
+
+function connect(){
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}/ws`);
+
+  ws.onopen = () => {
+    retry = 0;
+    $('dot').classList.remove('off');
+    $('statusText').textContent = 'live';
+    // Keeps intermediaries from closing an idle socket.
+    setInterval(() => { if (ws.readyState === 1) ws.send('ping'); }, 25000);
+  };
+
+  ws.onmessage = e => render(JSON.parse(e.data));
+
+  ws.onclose = () => {
+    $('dot').classList.add('off');
+    $('statusText').textContent = 'reconnecting';
+    // Exponential backoff with jitter, capped. A tight reconnect loop against
+    // a restarting server is a self-inflicted denial of service.
+    const wait = Math.min(15000, 500 * Math.pow(2, retry++)) * (0.5 + Math.random());
+    setTimeout(connect, wait);
+  };
+}
+
+function render(s){
+  if (s.status !== 'ok') return;
+
+  // An upstream failure must look different from a quiet network. A blank
+  // board and "nothing is late" are the same picture otherwise, and this page
+  // is read by someone deciding whether to put their coat on.
+  const SOURCES = {
+    simulator: 'Running on the built-in simulator — set BAHNWATCH_SOURCE=vbb for the live VBB feed.',
+    vbb: 'Live VBB feed.',
+    bvg: 'Live BVG feed (community mirror).',
+  };
+  // These inject a fake delay, which the server refuses on a live feed -- it
+  // has no way to make a real train late. Leaving the buttons visible meant a
+  // click did nothing at all and the only evidence was a 400 in the server log,
+  // so the honest move is not to offer the control.
+  const sim = s.source === 'simulator';
+  $('disruptBtn').hidden = !sim;
+  $('clearBtn').hidden = !sim;
+
+  if (s.feed_error) {
+    $('modeNote').textContent = `Feed unavailable — ${s.feed_error}. Times below are stale.`;
+    $('modeNote').style.color = '#c2410c';
+  } else {
+    const live = s.live_rows, total = s.observations;
+    $('modeNote').textContent = (SOURCES[s.source] || s.source)
+      + (s.source !== 'simulator' && live === 0 && total > 0
+         ? ' No realtime predictions in this poll — showing timetable only.' : '');
+    $('modeNote').style.color = '';
+  }
+  $('obsNote').textContent = `${s.observations.toLocaleString()} departures observed · baselines build as history accumulates`;
+  $('footerNote').textContent = `updated ${new Date(s.now).toLocaleTimeString('de-DE')}`;
+
+  // --- plans (multi-leg) ---
+  $('plans').innerHTML = s.plans.map(p => {
+    const shifted = Math.abs(p.shift_minutes) >= 4;
+    const broken = (p.legs || []).some(l => l.connection_missed);
+    const cls = broken ? 'bad' : (shifted ? 'alert' : '');
+    const fmt = iso => new Date(iso).toLocaleTimeString('de-DE', {hour:'2-digit', minute:'2-digit'});
+    const mins = Math.round(p.minutes_until_leave);
+    const when = mins > 90 ? `in ${(mins/60).toFixed(1)} h`
+               : mins > 0  ? `in ${mins} min`
+                           : `${Math.abs(mins)} min ago`;
+
+    const legs = (p.legs || []).map(l => {
+      const slack = l.connection_slack_min !== null && l.connection_slack_min !== undefined
+        ? `<span class="slack ${l.connection_missed ? 'miss' : (l.connection_slack_min < 2 ? 'tight' : 'ok')}">${l.connection_slack_min > 0 ? '+' : ''}${l.connection_slack_min} min to change</span>`
+        : '';
+      const delay = l.scheduled_departure
+        ? `${l.current_delay_min > 0.4 ? '+' + l.current_delay_min : 'on time'}`
+        : '—';
+      const dep = l.scheduled_departure ? fmt(l.scheduled_departure) : '--:--';
+      return `
+        <div class="leg ${l.connection_missed ? 'missed' : ''}">
+          <span class="badge suburban">${l.line}</span>
+          <span class="leg-route">${l.from_stop} → ${l.to_stop}</span>
+          <span class="leg-dep">${dep}</span>
+          <span class="leg-delay ${l.current_delay_min >= 3 ? 'late' : ''}">${delay}</span>
+          <div class="leg-note">${l.note || ''} ${slack}</div>
+        </div>`;
+    }).join('');
+
+    return `
+      <div class="plan ${cls}">
+        <div class="plan-label">${p.label}</div>
+        <div class="leave">${fmt(p.adjusted_leave_at)}<small> leave</small>
+          ${shifted ? `<span class="strike">${fmt(p.normal_leave_at)}</span>` : ''}
+        </div>
+        <div class="why">${p.explanation}</div>
+        <div class="countdown">${when}${shifted ? ` · ${p.shift_minutes} min earlier than usual` : ''}</div>
+        <div class="legs">${legs}</div>
+      </div>`;
+  }).join('');
+
+  if (s.board_stop_name) $('boardTitle').textContent = 'Live departures — ' + s.board_stop_name;
+
+  // --- board ---
+  $('board').innerHTML = s.board.map(d => {
+    const cls = d.delay >= 5 ? 'verylate' : (d.delay >= 2 ? 'late' : '');
+    return `
+      <div class="row ${d.cancelled ? 'cancelled' : ''}">
+        <span class="badge ${d.mode}">${d.line}</span>
+        <span class="dir">${d.direction}</span>
+        <span class="time">${d.actual}</span>
+        <span class="delay ${cls}">${d.cancelled ? 'cancelled' : (d.delay > 0.4 ? '+' + d.delay : 'on time')}</span>
+      </div>`;
+  }).join('');
+
+  // --- reliability ---
+  const rel = s.reliability || [];
+  const max = Math.max(0.01, ...rel.map(r => r.pct_5min_late));
+  $('reliability').innerHTML = rel.length ? rel.map(r => `
+      <div class="rel-row">
+        <span class="badge ${r.line.startsWith('U') ? 'subway' : r.line.startsWith('S') ? 'suburban' : r.line.startsWith('M') ? 'tram' : 'bus'}">${r.line}</span>
+        <span class="bar"><span style="width:${(r.pct_5min_late / max * 100).toFixed(0)}%"></span></span>
+        <span class="pct">${(r.pct_5min_late * 100).toFixed(1)}%</span>
+      </div>`).join('')
+    : '<p class="note">Not enough history yet — leave this running and baselines build up.</p>';
+
+  // --- alerts ---
+  (s.alerts || []).forEach(a => {
+    const key = a.commute_id + a.issued_at;
+    if (seenAlerts.has(key)) return;
+    seenAlerts.add(key);
+    notify(a.title, a.body + ' — ' + a.context);
+  });
+}
+
+function notify(title, body){
+  $('toastTitle').textContent = title;
+  $('toastBody').textContent = body;
+  $('toast').classList.add('show');
+  setTimeout(() => $('toast').classList.remove('show'), 9000);
+
+  if ('Notification' in window && Notification.permission === 'granted'){
+    new Notification(title, {body, tag: 'bahnwatch'});
+  }
+}
+
+$('notifyBtn').onclick = async () => {
+  if (!('Notification' in window)) return alert('This browser has no Notification API.');
+  const p = await Notification.requestPermission();
+  $('notifyBtn').textContent = p === 'granted' ? 'Notifications on' : 'Notifications blocked';
+  if (p === 'granted') notify('bahnwatch armed', 'You will be told when to leave early.');
+};
+
+async function post(url, label){
+  try {
+    const r = await fetch(url, {method:'POST'});
+    if (!r.ok){
+      const body = await r.json().catch(() => ({}));
+      notify(label + ' failed', body.error || ('HTTP ' + r.status));
+    }
+  } catch (e) {
+    notify(label + ' failed', 'the server is not reachable');
+  }
+}
+
+$('disruptBtn').onclick = () =>
+  post('/api/simulate/disruption?line=S2&minutes=9', 'Disruption');
+$('clearBtn').onclick = () => post('/api/simulate/clear', 'Clear');
+
+if ('Notification' in window && Notification.permission === 'granted')
+  $('notifyBtn').textContent = 'Notifications on';
+
+connect();
+</script>
+</body>
+</html>
